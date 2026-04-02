@@ -1,5 +1,9 @@
 # Starfield Creations Organizer
 
+> **Work in progress.** This plugin is still being tested. Back up your Creations before using it, and please report any issues you run into.
+
+**Note:** This plugin was built with assistance from an LLM (Claude). The code has been reviewed and tested, but keep that in mind.
+
 An MO2 plugin that moves your installed Starfield Creations into individual MO2-managed mod folders, so you can enable, disable, and prioritise them like any other mod.
 
 ## The Problem
