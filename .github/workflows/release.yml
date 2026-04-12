@@ -18,13 +18,19 @@ jobs:
           echo "version=$(python -c "exec(open('starfield_creations/_version.py').read()); print(VERSION)")" >> $GITHUB_OUTPUT
 
       - name: Zip plugin folder
-        run: zip -r starfield_creations.zip starfield_creations/
+        run: zip -r starfield_creations-v${{ steps.version.outputs.version }}.zip starfield_creations/
+
+      - name: Attach ZIP to GitHub release
+        if: github.event_name == 'release'
+        run: gh release upload ${{ github.event.release.tag_name }} starfield_creations-v${{ steps.version.outputs.version }}.zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload to Nexus Mods
         uses: Nexus-Mods/upload-action@main
         with:
           api_key: ${{ secrets.NEXUSMODS_API_KEY }}
           file_group_id: ${{ vars.NEXUSMODS_FILE_GROUP_ID }}
-          filename: starfield_creations.zip
+          filename: starfield_creations-v${{ steps.version.outputs.version }}.zip
           display_name: "Starfield Creations Organizer"
           version: ${{ steps.version.outputs.version }}

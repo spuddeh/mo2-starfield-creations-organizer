@@ -41,6 +41,10 @@ Restart MO2. The tool will appear in the **Tools** menu.
 
 MO2 will refresh and your Creations will show up as normal managed mods.
 
+## Known Issues
+
+- **Creations in the Documents Data directory are not found.** Starfield has two Data directories: the game install folder (`Steam\steamapps\common\Starfield\Data`) and `Documents\My Games\Starfield\Data`. This plugin can currently only detect Creations in the game install folder. If your Creations aren't showing up, try moving their files from the Documents location to the game Data folder and re-running.
+
 ## Notes
 
 - **Files are moved, not copied.** The originals are removed from the Data directory or Overwrite folder. MO2 handles linking them back when you launch the game through it. If you launch Starfield directly outside of MO2, those Creations won't load.
