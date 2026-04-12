@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -20,6 +22,12 @@ def scan_creations(organizer: mobase.IOrganizer) -> list[dict]:
     the MO2 Overwrite directory (for Creations downloaded while launching
     the game through MO2).
 
+    Compatible with MO2 2.5.2 through 2.5.3beta4+. The UnmanagedMods API
+    changed in beta4 — mods() now returns human-readable Title names instead
+    of raw plugin filenames, and referenceFile()/secondaryFiles() now take
+    Title names as input. We use CCPlugins() as a stem-based whitelist to
+    filter out DLC/base game entries, which works across all versions.
+
     Each entry: {
         "display_name": str,  # human-readable name from ContentCatalog
         "files": [Path],      # existing file paths on disk (esm/esl + ba2s)
@@ -33,47 +41,64 @@ def scan_creations(organizer: mobase.IOrganizer) -> list[dict]:
     mods_path = Path(organizer.modsPath())
     overwrite_path = Path(organizer.overwritePath())
 
-    # CCPlugins() is built from ContentCatalog.txt — the authoritative list of
-    # actual Creations. DLC (Constellation, Shattered Space) are hardcoded in
-    # primaryPlugins()/DLCPlugins() and are NOT present here.
+    # CCPlugins() returns plugin filenames for all ContentCatalog entries
+    # across all MO2 versions. Used as a whitelist to exclude DLC/base game
+    # entries that also appear in mods().
     cc_filenames = organizer.managedGame().CCPlugins()
+    cc_stems = {Path(f).stem.lower() for f in cc_filenames}
     _log.debug(f"Starfield Creations Organizer: CCPlugins() returned {len(cc_filenames)} entries")
 
-    cc_plugin_names = [Path(p).stem for p in cc_filenames]
+    # mods(False) returns all unmanaged mod names. In beta4+ these are
+    # human-readable Title names from ContentCatalog; in earlier versions
+    # they are raw plugin filename stems. Either way, passing them directly
+    # to displayName()/referenceFile()/secondaryFiles() works correctly.
+    all_names = unmanaged.mods(False)
+    _log.debug(f"Starfield Creations Organizer: mods() returned {len(all_names)} entries")
 
-    # Build a display name lookup and initialise the merged dict up front so
-    # overwrite files can be added even if referenceFile() finds nothing.
-    plugin_display: dict[str, str] = {}
+    # Group by display name so split Creations (e.g. Trackers Alliance ships
+    # as multiple plugin files with the same Title) are merged into one folder.
     merged: dict[str, dict] = {}
 
-    for plugin_name in cc_plugin_names:
-        display_name = unmanaged.displayName(plugin_name)
-        plugin_display[plugin_name] = display_name
-        # Pre-create entry so overwrite scan can populate it even when
-        # the game Data directory has no files for this creation.
+    # Pre-populate stem->display_name from ContentCatalog.txt so the overwrite
+    # scan can attribute files even when referenceFile() returns nothing (which
+    # happens when files are only in Overwrite, not in the game Data directory).
+    stem_to_display: dict[str, str] = _stem_map_from_catalog(organizer)
+
+    for name in all_names:
+        display_name = unmanaged.displayName(name)
+        ref = unmanaged.referenceFile(name)
+        secondary = unmanaged.secondaryFiles(name)
+
+        # Filter out DLC/base game entries: if the referenceFile stem is not
+        # in CCPlugins(), this entry is not a Creation.
+        if ref and Path(ref).stem.lower() not in cc_stems:
+            _log.debug(f"Starfield Creations Organizer: skipping '{display_name}' — not in CCPlugins (DLC/base game)")
+            continue
+
+        raw_paths = [ref] + list(secondary)
+
+        # is_file() rejects directories and non-existent paths (handles
+        # referenceFile() returning '.' for undownloaded Creations).
+        files = [Path(p) for p in raw_paths if p and Path(p).is_file()]
+
+        # Exclude files already inside the MO2 mods directory
+        files = [f for f in files if not _is_under(f, mods_path)]
+
+        # Build stem->display_name for the overwrite scan, even for entries
+        # with no on-disk files, so overwrite files can still be attributed.
+        for p in ([ref] + list(secondary)):
+            if p:
+                stem_to_display[Path(p).stem.lower()] = display_name
+
+        if not files:
+            _log.debug(f"Starfield Creations Organizer: no Data files for '{display_name}'")
+
         if display_name not in merged:
             merged[display_name] = {
                 "display_name": display_name,
                 "files": [],
                 "_seen": set(),
             }
-
-    # --- Pass 1: game Data directory via UnmanagedMods API ---
-    for plugin_name, display_name in plugin_display.items():
-        ref = unmanaged.referenceFile(plugin_name)
-        secondary = unmanaged.secondaryFiles(plugin_name)
-
-        raw_paths = [ref] + list(secondary)
-
-        # is_file() rejects directories and non-existent paths (handles the
-        # case where referenceFile() returns '.' for undownloaded creations).
-        files = [Path(p) for p in raw_paths if p and Path(p).is_file()]
-
-        # Exclude files already inside the MO2 mods directory
-        files = [f for f in files if not _is_under(f, mods_path)]
-
-        if files:
-            _log.debug(f"Starfield Creations Organizer: API found {len(files)} file(s) for '{display_name}'")
 
         entry = merged[display_name]
         for f in files:
@@ -84,11 +109,15 @@ def scan_creations(organizer: mobase.IOrganizer) -> list[dict]:
     # --- Pass 2: MO2 Overwrite directory ---
     # When the game is launched through MO2, Creations downloaded in-session
     # land in Overwrite rather than the game's Data directory.
-    # The UnmanagedMods API may not cover this location, so we scan it directly.
-    overwrite_files = _scan_overwrite(overwrite_path, cc_plugin_names)
+    overwrite_map = _scan_overwrite(overwrite_path, stem_to_display)
 
-    for plugin_name, ow_files in overwrite_files.items():
-        display_name = plugin_display[plugin_name]
+    for display_name, ow_files in overwrite_map.items():
+        if display_name not in merged:
+            merged[display_name] = {
+                "display_name": display_name,
+                "files": [],
+                "_seen": set(),
+            }
         entry = merged[display_name]
         added = 0
         for f in ow_files:
@@ -132,7 +161,7 @@ def organize_creations(
         safe_name = _ILLEGAL_CHARS.sub("-", display_name).strip()
         mod_name = f"{prefix}{safe_name}{suffix}"
 
-        _log.info(f"Starfield Creations Organizer: organising '{display_name}' → '{mod_name}'")
+        _log.info(f"Starfield Creations Organizer: organising '{display_name}' -> '{mod_name}'")
 
         guessed = mobase.GuessedString(mod_name, mobase.GuessQuality.USER)
         mod = organizer.createMod(guessed)
@@ -170,23 +199,19 @@ def organize_creations(
     return created
 
 
-def _scan_overwrite(overwrite_path: Path, cc_plugin_names: list[str]) -> dict[str, list[Path]]:
+def _scan_overwrite(overwrite_path: Path, stem_to_display: dict[str, str]) -> dict[str, list[Path]]:
     """
     Scans the MO2 Overwrite directory for Creation files.
 
-    Bethesda Creation filenames follow the convention:
-      <plugin_name>.esm / .esl / .esp
-      <plugin_name> - <descriptor>.ba2
+    stem_to_display maps lowercase file stems to display names, built from
+    referenceFile()/secondaryFiles() during the main scan pass.
 
-    Returns a dict mapping plugin_name → list[Path].
+    Returns a dict mapping display_name -> list[Path].
     """
     result: dict[str, list[Path]] = {}
 
     if not overwrite_path.is_dir():
         return result
-
-    # Build a lower-case lookup for fast matching
-    lower_names = {n.lower(): n for n in cc_plugin_names}
 
     for f in overwrite_path.rglob("*"):
         if not f.is_file():
@@ -195,17 +220,15 @@ def _scan_overwrite(overwrite_path: Path, cc_plugin_names: list[str]) -> dict[st
         stem = f.stem.lower()
 
         # Exact match covers .esm/.esl/.esp plugin files
-        if stem in lower_names:
-            plugin_name = lower_names[stem]
-            result.setdefault(plugin_name, []).append(f)
+        if stem in stem_to_display:
+            display_name = stem_to_display[stem]
+            result.setdefault(display_name, []).append(f)
             continue
 
-        # Prefix match covers BA2 archives: "<plugin> - Main.ba2" etc.
-        # Require the next character to be a space to avoid false matches
-        # between e.g. "ccbgsfe001-foo" and "ccbgsfe001-foobar".
-        for lower_name, plugin_name in lower_names.items():
-            if stem.startswith(lower_name + " "):
-                result.setdefault(plugin_name, []).append(f)
+        # Prefix + space match covers BA2 archives: "<plugin> - Main.ba2"
+        for known_stem, display_name in stem_to_display.items():
+            if stem.startswith(known_stem + " "):
+                result.setdefault(display_name, []).append(f)
                 break
 
     if result:
@@ -214,6 +237,44 @@ def _scan_overwrite(overwrite_path: Path, cc_plugin_names: list[str]) -> dict[st
     else:
         _log.debug("Starfield Creations Organizer: Overwrite scan found no Creation files")
 
+    return result
+
+
+def _stem_map_from_catalog(organizer: mobase.IOrganizer) -> dict[str, str]:
+    """
+    Parses ContentCatalog.txt directly to build a complete mapping of
+    lowercase plugin filename stems to their human-readable Title names.
+
+    This is used to pre-populate stem_to_display before the main scan so
+    the overwrite scan can attribute files even when referenceFile() returns
+    nothing (which happens when files are only in the Overwrite directory and
+    not in the game's Data directory).
+    """
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    game_name = organizer.managedGame().gameShortName()
+    catalog_path = Path(local_appdata) / game_name / "ContentCatalog.txt"
+
+    if not catalog_path.is_file():
+        _log.warning(f"Starfield Creations Organizer: ContentCatalog.txt not found at {catalog_path}")
+        return {}
+
+    try:
+        with open(catalog_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        _log.warning(f"Starfield Creations Organizer: failed to parse ContentCatalog.txt: {e}")
+        return {}
+
+    result: dict[str, str] = {}
+    for key, value in data.items():
+        if key == "ContentCatalog" or not isinstance(value, dict):
+            continue
+        title = value.get("Title", key)
+        for filename in value.get("Files", []):
+            stem = Path(filename).stem.lower()
+            result[stem] = title
+
+    _log.debug(f"Starfield Creations Organizer: ContentCatalog mapped {len(result)} file stem(s)")
     return result
 
 
