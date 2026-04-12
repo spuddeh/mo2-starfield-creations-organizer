@@ -8,6 +8,7 @@ except ImportError:
 import mobase
 
 from .dialog import CreationsDialog
+from ._version import VERSION
 
 
 class StarfieldCreationsPlugin(mobase.IPluginTool):
@@ -30,7 +31,8 @@ class StarfieldCreationsPlugin(mobase.IPluginTool):
         return "Moves Starfield Creations from the game Data directory into individual MO2-managed mod folders."
 
     def version(self) -> mobase.VersionInfo:
-        return mobase.VersionInfo(1, 0, 0, mobase.ReleaseType.ALPHA)
+        major, minor, patch = (int(x) for x in VERSION.split("."))
+        return mobase.VersionInfo(major, minor, patch, mobase.ReleaseType.ALPHA)
 
     def displayName(self) -> str:
         return "Starfield Creations Organizer"

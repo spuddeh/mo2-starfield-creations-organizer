@@ -16,6 +16,7 @@ except ImportError:
 import mobase
 
 from .organizer import scan_creations, organize_creations
+from ._version import VERSION
 
 _EXAMPLE_NAME = "Trackers Alliance: The Complete Bounty Series"
 
@@ -27,7 +28,7 @@ class CreationsDialog(QDialog):
         self._organizer = organizer
         self._creations = []
 
-        self.setWindowTitle("Starfield Creations Organizer")
+        self.setWindowTitle(f"Starfield Creations Organizer v{VERSION}")
         self.setMinimumWidth(500)
 
         layout = QVBoxLayout(self)

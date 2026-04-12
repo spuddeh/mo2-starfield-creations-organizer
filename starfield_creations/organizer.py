@@ -50,45 +50,71 @@ def scan_creations(organizer: mobase.IOrganizer) -> list[dict]:
 
     # mods(False) returns all unmanaged mod names. In beta4+ these are
     # human-readable Title names from ContentCatalog; in earlier versions
-    # they are raw plugin filename stems. Either way, passing them directly
-    # to displayName()/referenceFile()/secondaryFiles() works correctly.
+    # they are raw plugin filename stems.
     all_names = unmanaged.mods(False)
     _log.debug(f"Starfield Creations Organizer: mods() returned {len(all_names)} entries")
 
-    # Group by display name so split Creations (e.g. Trackers Alliance ships
-    # as multiple plugin files with the same Title) are merged into one folder.
     merged: dict[str, dict] = {}
 
     # Pre-populate stem->display_name from ContentCatalog.txt so the overwrite
-    # scan can attribute files even when referenceFile() returns nothing (which
-    # happens when files are only in Overwrite, not in the game Data directory).
+    # scan can attribute files even when referenceFile() finds nothing.
     stem_to_display: dict[str, str] = _stem_map_from_catalog(organizer)
 
     for name in all_names:
         display_name = unmanaged.displayName(name)
-        ref = unmanaged.referenceFile(name)
+
+        # referenceFile() returns a QFileInfo object, not a string.
+        # Call .absoluteFilePath() to get the actual path.
+        ref_info = unmanaged.referenceFile(name)
+        ref_str = ref_info.absoluteFilePath() if ref_info else ""
+        ref_path = Path(ref_str) if ref_str else None
+
+        # secondaryFiles() returns bare filenames from ContentCatalog when the
+        # mod is in the catalog (e.g. "sfta01 - Main.ba2"), or full paths via
+        # the directory-scan fallback for non-catalog entries.
         secondary = unmanaged.secondaryFiles(name)
 
-        # Filter out DLC/base game entries: if the referenceFile stem is not
-        # in CCPlugins(), this entry is not a Creation.
-        if ref and Path(ref).stem.lower() not in cc_stems:
+        # Filter out DLC/base game: ref_path stem must be a known CC plugin.
+        if ref_path and ref_path.stem.lower() not in cc_stems:
             _log.debug(f"Starfield Creations Organizer: skipping '{display_name}' — not in CCPlugins (DLC/base game)")
             continue
 
-        raw_paths = [ref] + list(secondary)
+        # Derive the search directory from the reference file's location.
+        # This handles multiple data directories (game install vs documents)
+        # without needing to enumerate them explicitly.
+        search_dirs: list[Path] = []
+        if ref_path and ref_path.is_file():
+            search_dirs.append(ref_path.parent)
+        search_dirs.append(overwrite_path)
 
-        # is_file() rejects directories and non-existent paths (handles
-        # referenceFile() returning '.' for undownloaded Creations).
-        files = [Path(p) for p in raw_paths if p and Path(p).is_file()]
+        files: list[Path] = []
+        seen: set[str] = set()
 
-        # Exclude files already inside the MO2 mods directory
-        files = [f for f in files if not _is_under(f, mods_path)]
+        # Add reference file first
+        if ref_path and ref_path.is_file() and not _is_under(ref_path, mods_path):
+            files.append(ref_path)
+            seen.add(ref_path.name.lower())
 
-        # Build stem->display_name for the overwrite scan, even for entries
-        # with no on-disk files, so overwrite files can still be attributed.
-        for p in ([ref] + list(secondary)):
-            if p:
-                stem_to_display[Path(p).stem.lower()] = display_name
+        for p in secondary:
+            if not p:
+                continue
+            path = Path(p)
+            if path.is_absolute():
+                # Non-catalog fallback already gives full paths
+                if path.is_file() and not _is_under(path, mods_path) and path.name.lower() not in seen:
+                    files.append(path)
+                    seen.add(path.name.lower())
+            else:
+                # Bare filename — search the reference file's directory then overwrite
+                for search_dir in search_dirs:
+                    candidate = search_dir / path.name
+                    if candidate.is_file() and not _is_under(candidate, mods_path):
+                        if candidate.name.lower() not in seen:
+                            files.append(candidate)
+                            seen.add(candidate.name.lower())
+                        break
+
+            stem_to_display[path.stem.lower()] = display_name
 
         if not files:
             _log.debug(f"Starfield Creations Organizer: no Data files for '{display_name}'")

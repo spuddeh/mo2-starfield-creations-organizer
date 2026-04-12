@@ -4,10 +4,6 @@ on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version number (e.g. 0.2.0)"
-        required: true
 
 jobs:
   upload-to-nexusmods:
@@ -15,6 +11,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          echo "version=$(python -c "exec(open('starfield_creations/_version.py').read()); print(VERSION)")" >> $GITHUB_OUTPUT
 
       - name: Zip plugin folder
         run: zip -r starfield_creations.zip starfield_creations/
@@ -26,4 +27,4 @@ jobs:
           file_group_id: ${{ vars.NEXUSMODS_FILE_GROUP_ID }}
           filename: starfield_creations.zip
           display_name: "Starfield Creations Organizer"
-          version: ${{ github.event.release.tag_name || github.event.inputs.version }}
+          version: ${{ steps.version.outputs.version }}
