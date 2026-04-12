@@ -26,7 +26,7 @@ The plugin uses the Creation data MO2 already has from `ContentCatalog.txt`. No 
 
 Copy the `starfield_creations/` folder into your MO2 `plugins/` directory:
 
-```
+```text
 <MO2 install>\plugins\starfield_creations\
 ```
 
@@ -53,7 +53,7 @@ MO2 will refresh and your Creations will show up as normal managed mods.
 
 - No Bethesda API calls
 - Works alongside Root Builder (files go in the mod root, not a `Root/` subfolder)
-- Tested on MO2 2.5.2, 2.5.3beta2, and 2.5.3beta3
+- Tested on MO2 2.5.2, 2.5.3beta2, 2.5.3beta3, and 2.5.3beta4
 
 ## License
 
